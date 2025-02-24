@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Statistik V1</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            padding: 0;
+            background-color: #f4f4f4;
+            text-align: center;
+        }
+        h1 {
+            color: #333;
+        }
+        textarea {
+            width: 80%;
+            height: 100px;
+            margin: 10px 0;
+            padding: 10px;
+            font-size: 16px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            resize: none;
+        }
+        button {
+            padding: 10px 15px;
+            font-size: 16px;
+            background-color: #28a745;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover {
+            background-color: #218838;
+        }
+        pre {
+            background: #fff;
+            padding: 10px;
+            border: 1px solid #ccc;
+            text-align: left;
+            overflow: auto;
+            width: 80%;
+            margin: auto;
+        }
+        canvas {
+            width: 80%;
+            max-width: 600px;
+            margin: auto;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>AI Statistik V1</h1>
+
+    <h3>Input Prompt</h3>
+    <textarea id="promptInput" placeholder="Masukkan prompt untuk AI..."></textarea><br>
+    <button onclick="askAI()">Dapatkan Kode</button>
+
+    <h3>Output Gemini</h3>
+    <pre id="codeOutput">...</pre>
+
+    <h3>Edit Kode Python</h3>
+    <textarea id="codeInput" placeholder="Masukkan atau edit kode sebelum dieksekusi..."></textarea><br>
+    <button onclick="executeCode()">Jalankan Kode</button>
+
+    <h3>Output Diagram</h3>
+    <canvas id="chartCanvas"></canvas>
+
+    <h3>Analisis AI</h3>
+    <pre id="analysisOutput">...</pre>
+
+    <script>
+        let chartInstance = null; // Untuk menyimpan instance Chart.js agar tidak duplikat
+
+        async function askAI() {
+            const prompt = document.getElementById("promptInput").value;
+            if (!prompt) {
+                alert("Masukkan prompt terlebih dahulu!");
+                return;
+            }
+
+            const response = await fetch("http://127.0.0.1:8000/ask", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ prompt })
+            });
+
+            const data = await response.json();
+            if (data.script) {
+                document.getElementById("codeOutput").innerText = data.script;
+                document.getElementById("codeInput").value = data.script;
+            } else {
+                document.getElementById("codeOutput").innerText = "❌ AI tidak memberikan kode.";
+            }
+        }
+
+        async function executeCode() {
+            const code = document.getElementById("codeInput").value;
+            if (!code) {
+                alert("Masukkan kode sebelum dieksekusi!");
+                return;
+            }
+
+            const response = await fetch("http://127.0.0.1:8000/execute", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ code })
+            });
+
+            const data = await response.json();
+            
+            if (data.chart_data && data.chart_data.labels && data.chart_data.data) {
+                renderChart(data.chart_data);
+                analyzeData(data.chart_data); // Panggil AI untuk analisis otomatis
+            } else {
+                alert("❌ Terjadi kesalahan dalam eksekusi kode!");
+                console.error(data);
+            }
+        }
+
+        function renderChart(chartData) {
+            const ctx = document.getElementById("chartCanvas").getContext("2d");
+
+            if (chartInstance) {
+                chartInstance.destroy(); // Hapus grafik lama sebelum membuat yang baru
+            }
+
+            chartInstance = new Chart(ctx, {
+                type: "bar",
+                data: {
+                    labels: chartData.labels,
+                    datasets: [{
+                        label: 'Hasil Data',
+                        data: chartData.data,
+                        backgroundColor: 'rgba(54, 162, 235, 0.6)',
+                        borderColor: 'rgba(54, 162, 235, 1)',
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    scales: {
+                        y: { beginAtZero: true }
+                    }
+                }
+            });
+        }
+
+        async function analyzeData(chartData) {
+            const formattedData = JSON.stringify(chartData);
+            const response = await fetch("http://127.0.0.1:8000/analyze", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ prompt: formattedData })
+            });
+
+            const data = await response.json();
+            if (data.analysis) {
+                document.getElementById("analysisOutput").innerText = data.analysis;
+            } else {
+                document.getElementById("analysisOutput").innerText = "❌ AI tidak dapat menganalisis data.";
+            }
+        }
+    </script>
+
+</body>
+</html>
