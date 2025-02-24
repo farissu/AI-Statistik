@@ -6,11 +6,18 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
 import logging
+import psycopg2
+import shutil
 import pandas as pd
 import numpy as np
 import re  # Untuk menghapus plt.show()
 import json
 
+# LangChain & Vector Store
+from langchain_chroma import Chroma
+from langchain_google_genai import GoogleGenerativeAI, GoogleGenerativeAIEmbeddings
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.chains import RetrievalQA
 
 # Load API Key dari .env
 load_dotenv()
@@ -24,7 +31,7 @@ genai.configure(api_key=api_key)
 # Inisialisasi FastAPI
 app = FastAPI()
 
-# Konfigurasi CORS agar frontend dapat mengakses API
+# Konfigurasi CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  
@@ -36,6 +43,10 @@ app.add_middleware(
 # Logging untuk debugging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Model request
+class RAGRequest(BaseModel):
+    question: str
 
 # Model request untuk eksekusi kode Python
 class CodeExecutionRequest(BaseModel):
@@ -149,7 +160,85 @@ async def analyze_text(request: PromptRequest):
     except Exception as e:
         logger.error(f"Error in /analyze: {str(e)}")
         return JSONResponse(content={"error": f"❌ Terjadi kesalahan: {str(e)}"}, status_code=500)
-    
+# Fungsi untuk mengambil data dari database
+def fetch_data_from_db():
+    """Mengambil data terbaru dari database dengan error handling"""
+    try:
+        with psycopg2.connect(
+            host=os.getenv("DB_HOST"),
+            database=os.getenv("DB_NAME"),
+            user=os.getenv("DB_USER"),
+            password=os.getenv("DB_PASSWORD"),
+            port=int(os.getenv("DB_PORT", "5432"))
+        ) as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT id, username, email FROM akun")  
+                rows = cursor.fetchall()
+
+        logger.info(f"✅ Database fetched rows: {rows}")  
+        return [f"User ID: {row[0]}, Username: {row[1]}, Email: {row[2]}" for row in rows]
+
+    except psycopg2.Error as e:
+        logger.error(f"❌ Database error: {str(e)}")
+        return []
+
+# ---- 📌 Setup ChromaDB untuk RAG ----
+
+# Hapus index lama untuk memastikan data terbaru
+if os.path.exists("./chroma_db/index"):
+    shutil.rmtree("./chroma_db/index")
+
+# Ambil data terbaru dari database
+documents = fetch_data_from_db()
+
+# Cek apakah ada data dari database
+if not documents:
+    raise ValueError("❌ Tidak ada data dari database untuk dimasukkan ke ChromaDB!")
+
+# Split dokumen sebelum masuk ke ChromaDB
+text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+docs = text_splitter.create_documents(documents)
+
+# Gunakan GoogleGenerativeAIEmbeddings
+embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=api_key)
+
+# Simpan embedding ke ChromaDB
+vectorstore = Chroma.from_documents(docs, embeddings, persist_directory="./chroma_db")
+retriever = vectorstore.as_retriever(search_kwargs={"k": 1})  # Ambil 1 dokumen terkait
+
+# Gunakan Gemini AI sebagai LLM
+llm = GoogleGenerativeAI(model="gemini-pro", google_api_key=api_key)
+
+# RetrievalQA Chain
+qa_chain = RetrievalQA.from_chain_type(
+    llm=llm,
+    retriever=retriever,
+    chain_type_kwargs={"verbose": True}
+)
+
+# ---- 📌 Endpoint: Retrieval-Augmented Generation (RAG) ----
+@app.post("/rag")
+async def rag_query(request: RAGRequest):
+    try:
+        # Ambil dokumen terkait dari ChromaDB
+        retrieved_docs = retriever.get_relevant_documents(request.question)
+        logger.info(f"🔍 Retrieved {len(retrieved_docs)} documents from ChromaDB")
+
+        # Jika tidak ada dokumen yang ditemukan
+        if not retrieved_docs:
+            return JSONResponse(content={"answer": "⚠️ No relevant documents found."})
+
+        # Gunakan Gemini AI untuk menjawab dengan RetrievalQA
+        answer = qa_chain.invoke({"query": request.question})
+
+        logger.info(f"📝 Generated Answer: {answer}")
+
+        return JSONResponse(content={"answer": answer})
+
+    except Exception as e:
+        logger.error(f"❌ Error in RAG query: {str(e)}")
+        return JSONResponse(content={"error": f"Terjadi kesalahan: {str(e)}"}, status_code=500)
+
 @app.get("/")
 async def root():
     return {"message": "API is running!"}
